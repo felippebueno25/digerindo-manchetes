@@ -84,7 +84,7 @@ class NewsAggregatorPro:
         except WebDriverException as e:
             msg = str(e)
             if "HTTPConnectionPool" in msg or "Read timed out" in msg:
-                print("🌐 Driver demorou a responder — cancelando carregamento e retomando.")
+                print("🌐 Driver demorou a responder — cancelando carregamento e retomando...")
                 try:
                     self.driver.execute_script("window.stop();")
                 except Exception:

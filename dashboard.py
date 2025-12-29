@@ -1,19 +1,24 @@
 import streamlit as st
-from google import genai # Usando a biblioteca nova que suporta o 2.5
+from google import genai
 from app import NewsAggregatorPro
 import os
+import json
+from datetime import datetime
+import glob
 
-# --- Configuração ---
+# --- Configuração da Página ---
 st.set_page_config(
-    page_title="News Intel AI (Powered by Gemini 2.5)",
+    page_title="News Intel AI (Pro)",
     page_icon="⚡",
     layout="wide"
 )
 
-# --- CSS (Texto Preto e Visual Limpo) ---
+# --- CSS (Visual Profissional) ---
 st.markdown("""
 <style>
     .block-container { padding-top: 2rem; }
+    
+    /* Card de Notícia */
     .news-card {
         background-color: white; padding: 15px; border-radius: 8px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e5e7eb;
@@ -30,131 +35,177 @@ st.markdown("""
         border-radius: 12px; padding: 30px; margin-bottom: 30px; 
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
     }
-    /* Força texto escuro no relatório */
     .ai-box h1, .ai-box h2, .ai-box h3 { color: #0f172a !important; font-weight: 700; margin-top: 20px; }
     .ai-box p, .ai-box li { color: #334155 !important; line-height: 1.6; font-size: 1.05rem; }
     .ai-box strong { color: #000 !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# --- Sistema de Arquivos (Persistência) ---
+REPORTS_DIR = "saved_reports"
+if not os.path.exists(REPORTS_DIR):
+    os.makedirs(REPORTS_DIR)
+
+def save_report_to_disk(topic_url, report_text, articles):
+    """Salva o resultado em JSON para histórico."""
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # Tenta extrair um nome amigável da URL ou usa Timestamp
+    try:
+        topic_name = topic_url.split("topics/")[1].split("?")[0][:15]
+    except:
+        topic_name = "topic"
+        
+    filename = f"{timestamp}_{topic_name}.json"
+    filepath = os.path.join(REPORTS_DIR, filename)
+    
+    data = {
+        "timestamp": timestamp,
+        "url": topic_url,
+        "report": report_text,
+        "articles_count": len(articles),
+        "articles": articles  # Salvamos também as fontes para referência futura
+    }
+    
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return filename
+
+def load_report_from_disk(filepath):
+    with open(filepath, "r", encoding="utf-8") as f:
+        return json.load(f)
+
 # --- Inteligência (Gemini 2.5 Flash Lite) ---
 def generate_intel_report(articles, api_key, status_callback):
-    if not api_key: return "⚠️ API Key ausente."
+    client = genai.Client(api_key=api_key)
     
-    try:
-        client = genai.Client(api_key=api_key)
-        
-        # 1. Preparação do Contexto (Single Shot Massivo)
-        status_callback(f"⚡ Gemini 2.5 lendo {len(articles)} fontes simultaneamente...", 0.2)
-        
-        full_context = ""
-        total_chars = 0
-        
-        for i, art in enumerate(articles):
-            # Limpeza leve: remove quebras de linha para compactar
-            clean_content = " ".join(art['content']).replace("\n", " ")
-            full_context += f"## FONTE {i+1} ({art['source_domain']}):\nTITULO: {art['title']}\nTEXTO: {clean_content}\n\n---\n\n"
-            total_chars += len(clean_content)
+    status_callback(f"⚡ Gemini 2.5 lendo {len(articles)} fontes...", 0.2)
+    
+    full_context = ""
+    for i, art in enumerate(articles):
+        clean_content = " ".join(art['content']).replace("\n", " ")
+        full_context += f"## FONTE {i+1} ({art['source_domain']}):\nTITULO: {art['title']}\nTEXTO: {clean_content}\n\n---\n\n"
 
-        # 2. O Prompt de Analista Sênior
-        prompt = f"""
-        Você é o Chefe de Inteligência de Mídia.
-        Você recebeu a cobertura completa ({len(articles)} matérias) sobre um tópico crítico.
-        
-        SUA MISSÃO:
-        Escreva um RELATÓRIO EXECUTIVO coeso, direto e rico em detalhes.
-        Não use frases genéricas como "existem opiniões diferentes". Diga QUAIS são e QUEM as defende.
-        
-        ESTRUTURA DO RELATÓRIO (Markdown):
-        # Relatório de Inteligência
-        
-        ## 🎯 O Fato Central
-        (Resumo jornalístico preciso do que aconteceu, sem lero-lero).
-        
-        ## ⚔️ Campo de Batalha das Narrativas
-        * **Narrativa Dominante:** (O que a maioria diz)
-        * **Narrativa Crítica/Oposição:** (Quem discorda e por quê)
-        * **Nuances Internacionais/Mercado:** (Se houver)
-        
-        ## 📊 Dados Concretos & Contradições
-        (Liste valores, datas, mortos, porcentagens. Se a Fonte A diz 10 e a B diz 100, DESTAQUE ISSO).
-        
-        ## 🔍 Blindspots (Ouro em Pó)
-        (Ache aquele detalhe único que só apareceu em 1 ou 2 matérias e ninguém mais viu).
-        
-        MATÉRIAS PARA ANÁLISE:
-        {full_context}
-        """
+    prompt = f"""
+    Você é o Chefe de Inteligência de Mídia.
+    Analise a cobertura completa ({len(articles)} matérias).
+    
+    ESTRUTURA DO RELATÓRIO (Markdown):
+    # Relatório de Inteligência
+    ## 🎯 O Fato Central
+    (Resumo preciso).
+    ## ⚔️ Campo de Batalha das Narrativas
+    (Narrativas Dominantes vs Críticas).
+    ## 📊 Dados Concretos & Contradições
+    (Valores, datas, mortos. Destaque divergências).
+    ## 🔍 Blindspots
+    (Detalhes únicos).
+    
+    MATÉRIAS:
+    {full_context}
+    """
+    
+    response = client.models.generate_content(
+        model='gemini-2.5-flash-lite',
+        contents=prompt
+    )
+    return response.text
 
-        status_callback(f"🧠 Processando {total_chars//4} tokens com Gemini 2.5 Flash Lite...", 0.4)
+# --- Interface Principal ---
 
-        # 3. Chamada ao Modelo Vencedor
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-lite', # <--- A ESTRELA DO SHOW
-            contents=prompt
-        )
-        return response.text
-
-    except Exception as e:
-        return f"❌ Erro na IA: {e}"
-
-# --- Sidebar & Setup ---
+# 1. Barra Lateral (Histórico)
 with st.sidebar:
-    st.header("⚙️ Configuração")
-    api_key = st.text_input("API Key", type="password", value=os.getenv("GEMINI_API_KEY", ""))
+    st.header("🗄️ Histórico")
     
-    st.divider()
+    # Lista arquivos JSON na pasta
+    files = sorted(glob.glob(os.path.join(REPORTS_DIR, "*.json")), reverse=True)
     
-    st.subheader("📡 Radar")
-    # Agora podemos ser ousados no padrão
-    max_news = st.slider("Alcance da Leitura", 10, 60, 40, help="2.5 Lite aguenta o tranco!")
-
-# --- Main Interface ---
-st.title("⚡ News Intel AI")
-st.caption("Powered by Gemini 2.5 Flash Lite")
-
-url_input = st.text_input("Cole o link do Google News (Cobertura Completa):", placeholder="https://news.google.com/topics/...")
-run_btn = st.button(f"Iniciar Análise de {max_news} Fontes 🚀", type="primary")
-
-if run_btn and url_input:
-    status_box = st.status("🚀 Iniciando sistemas...", expanded=True)
-    p_bar = status_box.progress(0)
-    
-    def update_ui(msg, pct):
-        p_bar.progress(min(max(pct, 0.0), 1.0))
-        status_box.write(f"**{msg}**")
-
-    # 1. Scraper (O seu app.py robusto faz o trabalho sujo aqui)
-    agg = NewsAggregatorPro()
-    articles = agg.run(url_input, progress_callback=update_ui, max_items=max_news)
-    
-    if articles:
-        # 2. IA (O momento da verdade)
-        update_ui(f"✅ {len(articles)} extraídos. Acionando Rede Neural...", 0.1)
-        
-        if api_key:
-            report = generate_intel_report(articles, api_key, update_ui)
-            
-            status_box.update(label="✅ Missão Cumprida!", state="complete", expanded=False)
-            
-            st.subheader("📄 Relatório de Inteligência")
-            st.markdown(f'<div class="ai-box">{report}</div>', unsafe_allow_html=True)
-        else:
-            status_box.update(label="⚠️ Falta Chave API", state="error")
-            
-        # 3. Grid Visual
-        st.divider()
-        st.caption(f"Fontes Processadas: {len(articles)}")
-        cols = st.columns(3)
-        for i, row in enumerate(articles):
-            with cols[i%3]:
-                st.markdown(f"""
-                <div class="news-card">
-                    <div class="source-tag">{row['source_domain']}</div>
-                    <div class="card-title">{row['title']}</div>
-                    <div class="card-preview">{" ".join(row['content'][:3])}...</div>
-                    <a href="{row['url']}" target="_blank" class="read-btn">Ler original 🔗</a>
-                </div>
-                """, unsafe_allow_html=True)
+    selected_file = None
+    if files:
+        file_options = {f: f.split("/")[-1].replace(".json", "") for f in files}
+        selected_file = st.selectbox(
+            "Selecione um relatório anterior:", 
+            options=files, 
+            format_func=lambda x: file_options[x]
+        )
+        if st.button("Carregar Histórico"):
+            st.session_state['loaded_report'] = load_report_from_disk(selected_file)
+            st.rerun()
     else:
-        status_box.update(label="❌ Falha na Extração", state="error")
+        st.info("Nenhum relatório salvo ainda.")
+
+# 2. Área Central
+st.title("⚡ News Intel AI")
+
+# Tenta pegar a chave do ambiente
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    st.error("❌ ERRO CRÍTICO: `GEMINI_API_KEY` não encontrada nas variáveis de ambiente.")
+    st.stop()
+
+# Se carregou um histórico, mostra ele. Se não, mostra a ferramenta de nova análise.
+if 'loaded_report' in st.session_state:
+    data = st.session_state['loaded_report']
+    st.info(f"📂 Visualizando relatório salvo em: {data['timestamp']}")
+    if st.button("⬅️ Voltar para Nova Análise"):
+        del st.session_state['loaded_report']
+        st.rerun()
+    
+    st.markdown(f'<div class="ai-box">{data["report"]}</div>', unsafe_allow_html=True)
+    st.divider()
+    st.subheader(f"📚 Fontes Originais ({data['articles_count']})")
+    cols = st.columns(3)
+    for i, row in enumerate(data['articles']):
+        with cols[i%3]:
+            st.markdown(f"""<div class="news-card"><div class="source-tag">{row['source_domain']}</div><div class="card-title">{row['title']}</div><a href="{row['url']}" target="_blank" class="read-btn">Ler original 🔗</a></div>""", unsafe_allow_html=True)
+
+else:
+    # Modo Nova Análise
+    url_input = st.text_input("URL Google News (Cobertura Completa):", placeholder="https://news.google.com/topics/...")
+    
+    # Hardcoded para extração máxima (100 itens deve cobrir tudo)
+    run_btn = st.button("Iniciar Análise Completa 🚀", type="primary")
+
+    if run_btn and url_input:
+        status_box = st.status("🚀 Iniciando motor de inteligência...", expanded=True)
+        p_bar = status_box.progress(0)
+        
+        def update_ui(msg, pct):
+            p_bar.progress(min(max(pct, 0.0), 1.0))
+            status_box.write(f"**{msg}**")
+
+        try:
+            # 1. Scraper (Sempre MAX)
+            agg = NewsAggregatorPro()
+            articles = agg.run(url_input, progress_callback=update_ui, max_items=150) # Hardcoded MAX
+            
+            if articles:
+                # 2. IA
+                update_ui(f"✅ {len(articles)} extraídos. Gerando Inteligência...", 0.1)
+                report = generate_intel_report(articles, API_KEY, update_ui)
+                
+                # 3. Salvar Automaticamente
+                update_ui("💾 Salvando no histórico...", 0.9)
+                filename = save_report_to_disk(url_input, report, articles)
+                
+                status_box.update(label="✅ Concluído e Salvo!", state="complete", expanded=False)
+                
+                # Exibe Resultado
+                st.success(f"Relatório salvo em: `{filename}`")
+                st.subheader("📄 Relatório de Inteligência")
+                st.markdown(f'<div class="ai-box">{report}</div>', unsafe_allow_html=True)
+                
+                # Botão de Download TXT
+                st.download_button("📥 Baixar TXT", report, file_name="relatorio.txt")
+                
+                # Grid de Fontes
+                st.divider()
+                st.subheader(f"📚 Fontes Processadas ({len(articles)})")
+                cols = st.columns(3)
+                for i, row in enumerate(articles):
+                    with cols[i%3]:
+                         st.markdown(f"""<div class="news-card"><div class="source-tag">{row['source_domain']}</div><div class="card-title">{row['title']}</div><a href="{row['url']}" target="_blank" class="read-btn">Ler original 🔗</a></div>""", unsafe_allow_html=True)
+            else:
+                status_box.update(label="❌ Nenhuma notícia encontrada", state="error")
+                
+        except Exception as e:
+            st.error(f"Erro: {e}")

@@ -1,147 +1,30 @@
-# Copilot Instructions for this Workspace
+## Copilot Instructions for this Workspace
 
-These instructions help AI coding agents work productively in this repo.
+Concise guidance so agents can work productively here.
 
-## Overview
-- Single-file app in [app.py](../app.py) orchestrates news aggregation via Selenium.
-- Class `NewsAggregatorPro` fetches Google News links, resolves real article URLs, pulls summaries from `smry.ai`, cleans text, and renders an HTML report.
-- Sample raw SMRY output lives in [noticias_bypass.txt](../noticias_bypass.txt) and informs text cleaning rules.
+### Purpose and Flow
+- Single entrypoint [app.py](../app.py) with class `NewsAggregatorPro`; fetches Google News story links, resolves the real article URL, summarizes via `smry.ai`, cleans text, and renders an HTML report.
+- Pipeline: `run()` scrolls and captures up to 10 Google redirects → `get_real_url()` waits until the redirect leaves `news.google.com` → `extract_smry()` opens `https://smry.ai/<real_url>`, grabs `h1`/`body`, runs `clean_text()` → `generate_html()` writes `news_report.html`.
 
-## Architecture & Flow
-- `run(url)`: loads a Google News story page, scrolls to render links, filters up to 10 valid article links, and processes each.
-- `get_real_url(google_link)`: opens the Google News redirect and waits until the final article URL is reached.
-- `extract_smry(real_url)`: loads `https://smry.ai/<real_url>`, captures `h1`/title and `body` text, then applies `clean_text()`.
-- `clean_text(raw_text)`: removes UI/marketing and short/noisy lines using `garbage_terms` and minimum length.
-- `generate_html(filename)`: builds a styled single-page report from `articles_data` and writes to disk.
+### Runtime Expectations
+- Depends on Selenium + webdriver-manager (see [requirements.txt](../requirements.txt)); Chrome/Chromium must be installed and headless-friendly.
+- Browser flags already set: `--headless=new`, `--no-sandbox`, `--disable-dev-shm-usage`, `--disable-gpu`, custom UA, `page_load_strategy="eager"`; keep them unless debugging.
+- `safe_get()` wraps navigation with timeouts and `window.stop()` on slow loads; `restart_driver()` reinstantiates Chrome after hard failures.
 
-## Developer Workflow
-- Install Python deps:
-  ```bash
-  pip install selenium webdriver-manager
-  ```
-- On Ubuntu/Codespaces, ensure a headless browser is available (Chrome/Chromium):
-  ```bash
-  sudo apt-get update
-  sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
-  # Optional: fonts for nicer rendering
-  sudo apt-get install -y fonts-liberation
-  ```
-- Run locally:
-  ```bash
-  python app.py
-  ```
-- To target a different Google News story, edit `target_url` in [app.py](../app.py).
+### Data and Cleaning
+- Text cleaning lives in `clean_text()`: drops empty/short lines and UI junk listed in `garbage_terms`; extend using the raw SMRY sample [noticias_bypass.txt](../noticias_bypass.txt).
+- Link filtering in `run()` only accepts anchors containing `/articles/` or `/read/` on `google.com`; cap is 10 items—raise the slice to broaden coverage.
 
-## Conventions & Patterns
-- Headless Chrome is configured for Codespaces: `--headless`, `--no-sandbox`, `--disable-dev-shm-usage`, `--window-size=1920,1080`, custom user-agent.
-- Logging is in pt‑BR with emojis; keep output user-friendly and actionable.
-- Text cleaning is driven by `garbage_terms` and minimum length; expand the list using examples from [noticias_bypass.txt](../noticias_bypass.txt).
-- Throughput: limits to 10 items; uses simple `sleep` and minimal `WebDriverWait`—prefer small, incremental timing tweaks over large refactors.
+### Outputs and Styling
+- HTML report is assembled inline in `generate_html()` with simple cards, meta text, and “Ler original” CTA; tweak CSS there. Default output path: `news_report.html` in repo root.
+- JSON export is not built-in but easy: serialize `articles_data` after processing if needed.
 
-## Integration Points
-- External sites: Google News and `smry.ai` (HTML body text extraction).
-- Web automation: Selenium `webdriver.Chrome` with `webdriver_manager` automatically fetching the driver.
-- If Chromium is installed instead of Chrome, set `Options.binary_location` to the Chromium binary path when needed.
+### Developer Workflows
+- Fast run (assumes deps installed): `python app.py`.
+- Install + run helpers: [run.sh](../run.sh) installs Chromium if missing and launches the app; [install_and_run.sh](../install_and_run.sh) installs system libs then runs; [run_with_install.py](../run_with_install.py) performs env diagnostics, attempts Chromium install, installs critical libs, then executes the app; [debug_chromium.py](../debug_chromium.py) checks binary presence/versions/libs and finally runs the app.
+- Changing the target story: edit `target_url` near the bottom of [app.py](../app.py).
 
-## Extending Safely
-- Increase coverage: raise the item limit or refine link filtering (see anchor `href` checks in `run`).
-- Robustness: prefer `WebDriverWait` over fixed `sleep` for specific elements; keep headless-friendly flags.
-- Output formats: add a JSON export alongside HTML by serializing `articles_data`.
-- Styling: adjust CSS inside `generate_html()`; avoid external assets to keep output self-contained.
-
-## Troubleshooting
-- Driver failures: ensure Chrome/Chromium is installed; `webdriver_manager` downloads the driver, not the browser.
-- Empty report: link filtering too strict or SMRY page structure changed—log `current_url`, title, and `body` length for diagnostics.
-- Anti-bot issues: rotate/adjust user-agent, increase waits, or briefly disable `--headless` when debugging.
-
-## Browser Setup Examples (Chromium)
-- Detect and set Chromium binary automatically:
-  ```python
-  from shutil import which
-  self.options.binary_location = which("chromium-browser") or which("chromium") or "/usr/bin/chromium"
-  ```
-- Toggle headless for debug:
-  ```python
-  self.options.add_argument("--headless=new")  # or remove to see UI
-  self.options.add_argument("--user-data-dir=/tmp/chrome-profile")  # persist session to reduce blocks
-  ```
-
-## Link Filtering & Throughput
-- In `run()`, links are accepted when `href` contains `/articles/` or `/read/` and domain inclui `google.com`. Para ampliar:
-  ```python
-  if h and "google.com" in h and any(p in h for p in ("/articles/", "/read/", "/topics/")):
-      valid_links.add(h)
-  ```
-- Aumentar limite de itens com segurança:
-  ```python
-  link_list = list(valid_links)[:20]
-  ```
-
-## SMRY Extraction Waits (preferir WebDriverWait)
-- Substituir `sleep` por esperas direcionadas quando possível:
-  ```python
-  from selenium.webdriver.support import expected_conditions as EC
-  from selenium.webdriver.common.by import By
-  WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "h1")))
-  title = self.driver.find_element(By.TAG_NAME, "h1").text
-  ```
-- Garantir corpo carregado antes da leitura:
-  ```python
-  WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-  raw_body = self.driver.find_element(By.TAG_NAME, "body").text
-  ```
-
-## Clean Text: Evolução guiada por amostras
-- Use [noticias_bypass.txt](../noticias_bypass.txt) para ampliar `garbage_terms`:
-  ```python
-  garbage_terms += [
-      "Go Pro", "Summary", "Share", "Copy page", "Toggle theme",
-      "Smry Fast", "Smry Slow", "Wayback", "Jina.ai", "reader",
-      "original", "iframe"
-  ]
-  ```
-
-## JSON Export (exemplo rápido)
-- Após processar `articles_data`, exporte JSON sem alterar o fluxo HTML:
-  ```python
-  import json
-  with open("news_report.json", "w", encoding="utf-8") as jf:
-      json.dump(self.articles_data, jf, ensure_ascii=False, indent=2)
-  ```
-
-## Abrir Relatório
-- Em Linux/Codespaces, abra o HTML gerado com o navegador padrão:
-  ```bash
-  "$BROWSER" news_report.html
-  ```
-
-## Debug rápido
-- Logar URLs e tempos:
-  ```python
-  import time
-  t0 = time.time()
-  self.driver.get(google_link)
-  print(f"URL atual: {self.driver.current_url}")
-  print(f"Latência de navegação: {time.time() - t0:.2f}s")
-  ```
-- Verificar título e fallback:
-  ```python
-  try:
-      title = self.driver.find_element(By.TAG_NAME, "h1").text
-  except:
-      title = self.driver.title
-  print(f"Título capturado: {title}")
-  ```
-- Medir tamanho do corpo e HTML:
-  ```python
-  raw_body = self.driver.find_element(By.TAG_NAME, "body").text
-  print(f"Tamanho body: {len(raw_body)} | HTML: {len(self.driver.page_source)}")
-  ```
-- Screenshot para inspeção rápida (headless funciona):
-  ```python
-  self.driver.save_screenshot("/tmp/smry.png")
-  ```
-- Desativar headless temporariamente:
-  ```python
-  # Remova '--headless' nas opções ou use '--headless=new' para compatibilidade
-  ```
+### Troubleshooting Patterns
+- Chrome missing: install `chromium-browser` or `chromium` plus libs (`libnss3`, `libgconf-2-4`, `libx11-*`, `libxss1`, `fonts-liberation`, etc.); scripts above automate this.
+- Empty or short summaries: confirm `get_real_url()` leaves Google; log `current_url`, title, and body length; adjust link filtering if Google page layout changes.
+- Anti-bot or slow loads: increase `WebDriverWait` durations in `extract_smry()`, temporarily remove `--headless`, or set `options.binary_location` to the detected Chromium path (`which("chromium-browser") or which("chromium")`).

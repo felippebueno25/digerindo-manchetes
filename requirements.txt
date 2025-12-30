@@ -2,3 +2,4 @@ selenium
 webdriver-manager
 streamlit
 pandas
+google-genai

@@ -1,183 +1,195 @@
-import time
-import os
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+import asyncio
+import random
+from crawl4ai import AsyncWebCrawler
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+import sys
+
+# Fix para Linux/Codespaces
+if sys.platform.startswith("linux"):
+    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
 class NewsAggregatorPro:
     def __init__(self):
-        self.options = Options()
-        # Configurações para rodar liso no Codespaces
-        self.options.add_argument("--headless=new") 
-        self.options.add_argument("--no-sandbox")
-        self.options.add_argument("--disable-dev-shm-usage")
-        self.options.add_argument("--disable-gpu")
-        self.options.add_argument("--disable-extensions")
-        self.options.page_load_strategy = "eager" 
-        self.options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-        
-        self.driver = None
-        self.start_driver()
-        self.articles_data = [] 
+        self.user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        ]
+        self.base_url = "https://news.google.com"
 
-    def start_driver(self):
-        """Inicia ou reinicia o navegador."""
-        if self.driver:
-            try: self.driver.quit()
-            except: pass
-        
-        print("   🔧 Iniciando navegador...")
+    def _get_headers(self):
+        return {
+            "User-Agent": random.choice(self.user_agents),
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://news.google.com/"
+        }
+
+    def _clean_image_url(self, url):
+        if not url: return None
+        if "googleusercontent.com" in url: return url
+        if url.startswith("data:image"): return url
+        if "/api/attachments/" in url: return None
+        if "favicon" in url: return None
+        if not url.startswith("http"): return None
+        return url
+
+    # --- 1. MENU ---
+    async def _scan_menu(self, crawler):
+        print("   🧭 Mapeando Menu...")
+        url = "https://news.google.com/?hl=pt-BR&gl=BR&ceid=BR%3Apt-419"
         try:
-            self.driver = webdriver.Chrome(
-                service=Service(ChromeDriverManager().install()), 
-                options=self.options
-            )
-            self.driver.set_page_load_timeout(25) 
-        except Exception as e:
-            print(f"   ❌ Erro driver: {e}")
-            raise
-
-    def safe_get(self, url):
-        """Navegação segura com timeout controlado."""
-        try:
-            self.driver.get(url)
-            return True
-        except TimeoutException:
-            try: self.driver.execute_script("window.stop();")
-            except: pass
-            return True
-        except Exception as e:
-            print(f"   ⚠️ Erro nav ({str(e)[:30]})...")
-            return False
-
-    def clean_text(self, raw_text):
-        """Limpa o texto do HTML (remove menus, rodapés, etc)."""
-        if not raw_text: return []
-        lines = raw_text.split('\n')
-        cleaned = []
-        garbage = ["Summarize", "Listen", "Share", "Created with smry", "Menu", "Search", "Assine", "Login", "Cookies", "Subscribe", "Voltar"]
-        for line in lines:
-            line = line.strip()
-            if len(line) < 40: continue 
-            if any(term.lower() in line.lower() for term in garbage): continue
-            cleaned.append(line)
-        return cleaned
-
-    def process_article(self, real_url):
-        """Extrai título e conteúdo de uma URL real."""
-        content = None
-        title = "Sem Título"
-        
-        # Tentativa Direta
-        if self.safe_get(real_url):
-            try:
-                try: title = self.driver.find_element(By.TAG_NAME, "h1").text
-                except: title = self.driver.title
-                
-                raw_text = self.driver.find_element(By.TAG_NAME, "body").text
-                
-                # Validação básica
-                if len(raw_text) > 500 and "exclusivo para assinantes" not in raw_text.lower():
-                    content = self.clean_text(raw_text)
-            except: pass
-
-        # Tentativa Fallback (Smry.ai) se falhou ou paywall
-        if not content:
-            smry_url = f"https://smry.ai/{real_url}"
-            if self.safe_get(smry_url):
-                try:
-                    time.sleep(2.5) # Espera renderizar
-                    raw_text = self.driver.find_element(By.TAG_NAME, "body").text
-                    content = self.clean_text(raw_text)
-                    if content: title = title or self.driver.title
-                except: pass
-
-        if content:
-            return {"title": title, "url": real_url, "content": content, "source_domain": real_url.split('/')[2]}
-        return None
-
-    def get_real_url(self, google_link):
-        """Resolve o link de redirecionamento do Google."""
-        if not self.safe_get(google_link): return None
-        try:
-            # Espera sair do domínio google.com
-            WebDriverWait(self.driver, 10).until(lambda d: "news.google.com" not in d.current_url)
-            return self.driver.current_url
-        except:
-            return self.driver.current_url
-
-    def run(self, url, progress_callback=None, max_items=None):
-        """
-        Executa o processo principal.
-        max_items: Limita quantas notícias processar (útil para testes).
-        """
-        def update(msg, pct):
-            print(msg)
-            if progress_callback: progress_callback(msg, pct)
-
-        update(f"🌐 Iniciando: {url}", 0.0)
-        self.safe_get(url)
-        time.sleep(2)
-        
-        # Scroll Infinito
-        update("📜 Carregando lista...", 0.1)
-        last_height = self.driver.execute_script("return document.body.scrollHeight")
-        for _ in range(5): 
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1.5)
-            new_height = self.driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height: break
-            last_height = new_height
-
-        # Coleta Links
-        links_elems = self.driver.find_elements(By.TAG_NAME, "a")
-        unique_links = set()
-        for l in links_elems:
-            try:
-                h = l.get_attribute("href")
-                if h and ("/articles/" in h or "/read/" in h) and "google.com" in h:
-                    unique_links.add(h)
-            except: pass
-        
-        link_list = list(unique_links)
-        
-        # --- LIMITADOR (SLIDER) ---
-        if max_items:
-            link_list = link_list[:max_items]
-        # --------------------------
-        
-        total = len(link_list)
-        update(f"✅ {total} links selecionados.", 0.2)
-        
-        for i, link in enumerate(link_list):
-            pct = 0.2 + (0.8 * (i / total))
-            update(f"[{i+1}/{total}] Processando...", pct)
-
-            # Tentativa 1
-            real_url = self.get_real_url(link)
+            result = await crawler.arun(url=url, magic=True, bypass_cache=True, headers=self._get_headers())
+            if not result.success: return []
             
-            # --- SISTEMA ANTI-BLOQUEIO (COOL DOWN) ---
-            if not real_url:
-                print(f"      🛑 Bloqueio detectado. Cool Down de 10s...")
-                time.sleep(10) # Espera o Google esquecer a gente
-                self.start_driver() # Pega uma sessão limpa
+            soup = BeautifulSoup(result.html, 'html.parser')
+            topics = []
+            seen = set()
+            priority = ["Brasil", "Mundo", "Local", "Negócios", "Tecnologia", "Entretenimento", "Esportes", "Saúde"]
+
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                txt = a.get_text(strip=True)
+                if "./topics/" in href and len(txt) > 2 and len(txt) < 20:
+                    if any(p.lower() in txt.lower() for p in priority):
+                        full = href.replace(".", self.base_url, 1)
+                        if full not in seen:
+                            topics.append({"title": txt, "url": full})
+                            seen.add(full)
+            
+            topics.sort(key=lambda x: next((i for i, p in enumerate(priority) if p.lower() in x['title'].lower()), 99))
+            return topics
+        except: return []
+
+    # --- 2. MANCHETES (SEM <ARTICLE>) ---
+    async def _scan_headlines(self, crawler, topic_url):
+        print(f"   📂 Lendo Tópico: {topic_url}")
+        js_scroll = "window.scrollBy(0, 1000); await new Promise(r => setTimeout(r, 400)); window.scrollBy(0, 1000);"
+        try:
+            result = await crawler.arun(url=topic_url, js_code=js_scroll, magic=True, headers=self._get_headers())
+            if not result.success: return []
+
+            soup = BeautifulSoup(result.html, 'html.parser')
+            headlines = []
+            seen = set()
+
+            # CAÇADOR DE LINKS BRUTO (Foda-se a tag article)
+            all_links = soup.find_all('a', href=True)
+            
+            for a in all_links:
+                href = a['href']
                 
-                # Tentativa 2
-                real_url = self.get_real_url(link)
-                if not real_url: 
-                    continue # Se falhou de novo, pula
-            # -----------------------------------------
+                # Aceita stories (cobertura) E articles (manchetes diretas)
+                is_story = "./stories/" in href
+                is_article = "./articles/" in href
+                
+                if not (is_story or is_article): continue
+                
+                full_link = href.replace(".", self.base_url, 1)
+                if full_link in seen: continue
 
-            if "news.google.com" in real_url: continue
+                # Tenta pegar título do link
+                title = a.get_text(strip=True)
+                
+                # Se título for ruim ("Veja mais"), sobe na árvore pra achar o pai
+                card_block = None
+                parent = a.parent
+                # Sobe até achar um container que tenha imagem ou texto grande
+                for _ in range(4):
+                    if parent:
+                        if parent.find('img') or parent.find('h3') or parent.find('h4'):
+                            card_block = parent
+                            break
+                        parent = parent.parent
+                
+                if card_block:
+                    # Tenta achar H3/H4
+                    h = card_block.find(['h3', 'h4'])
+                    if h: 
+                        title = h.get_text(strip=True)
+                    elif len(title) < 10:
+                        # Pega o maior link de texto dentro do bloco
+                        sub_links = card_block.find_all('a')
+                        valid_texts = [l.get_text(strip=True) for l in sub_links]
+                        if valid_texts: title = max(valid_texts, key=len)
 
-            data = self.process_article(real_url)
-            if data: self.articles_data.append(data)
+                if len(title) < 10: continue
 
-        self.driver.quit()
-        update("✨ Extração Finalizada!", 1.0)
-        return self.articles_data
+                # Imagem
+                img_src = None
+                if card_block:
+                    img = card_block.find('img')
+                    if img:
+                        raw = img.get('src') or img.get('data-src') or img.get('srcset', '').split(' ')[0]
+                        img_src = self._clean_image_url(raw)
+
+                headlines.append({
+                    "title": title,
+                    "url": full_link,
+                    "image": img_src,
+                    "is_cluster": is_story
+                })
+                seen.add(full_link)
+
+            print(f"   ✅ Itens: {len(headlines)}")
+            return headlines[:30]
+        except Exception as e:
+            print(f"Erro scan: {e}")
+            return []
+
+    # --- 3. CONTEÚDO (COM RETORNO DE URL) ---
+    async def _deep_dive(self, crawler, url, max_items):
+        try:
+            print(f"   🕵️ Mergulhando: {url}")
+            result = await crawler.arun(url=url, magic=True, headers=self._get_headers())
+            
+            soup = BeautifulSoup(result.html, 'html.parser')
+            links = set()
+            
+            # Pega links internos da página (seja story ou article redirecionado)
+            for a in soup.find_all('a', href=True):
+                if "./articles/" in a['href'] or "/read/" in a['href']:
+                    full = a['href'].replace(".", self.base_url, 1) if a['href'].startswith(".") else a['href']
+                    links.add(full)
+            
+            final_links = list(links)[:max_items]
+            if not final_links: final_links = [url] # Se não achou filhos, tenta o próprio pai
+
+            async def fetch(l):
+                try:
+                    await asyncio.sleep(random.uniform(0.1, 0.5))
+                    res = await crawler.arun(url=l, magic=True, word_count_threshold=200)
+                    
+                    if res.success and res.markdown:
+                        dom = urlparse(res.url).netloc.replace("www.", "")
+                        return {
+                            "title": res.media.get("title", "Sem Título"), 
+                            "source_domain": dom, 
+                            "content": res.markdown,
+                            "url": res.url # <--- CORREÇÃO DO KEYERROR
+                        }
+                except: pass
+                return None
+
+            tasks = [fetch(l) for l in final_links]
+            results = await asyncio.gather(*tasks)
+            valid = [r for r in results if r is not None and len(r['content']) > 200]
+            return valid
+        except Exception as e: 
+            print(f"Erro deep dive: {e}")
+            return []
+
+    # --- WRAPPERS ---
+    def _run_sync(self, coro):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        crawler = AsyncWebCrawler(verbose=False)
+        try:
+            return loop.run_until_complete(coro(crawler))
+        finally:
+            try: loop.run_until_complete(crawler.crawler_strategy.close()) 
+            except: pass
+            loop.close()
+
+    def get_menu_topics(self): return self._run_sync(self._scan_menu)
+    def get_headlines_from_topic(self, url): return self._run_sync(lambda c: self._scan_headlines(c, url))
+    def get_story_content(self, url): return self._run_sync(lambda c: self._deep_dive(c, url, 10))
